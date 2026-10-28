@@ -1,116 +1,49 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { createClient } from "@/utils/supabase/server";
+import { TaskForm } from "@/components/tasks/task-form";
+import { TaskSearchInput } from "@/components/tasks/task-search-input";
+import {
+  PriorityBadge,
+  StatusBadge,
+} from "@/components/tasks/task-form";
+import { deleteTaskAction, toggleTaskStatusAction } from "@/actions/tasks";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { CreateTaskForm } from "@/components/tasks/create-task-form";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   CheckCircle2,
   Clock,
   ListTodo,
-  ArrowUpRight,
   Rocket,
+  ChevronLeft,
+  ChevronRight,
+  Crown,
+  User,
+  Trash2,
+  ToggleLeft,
 } from "lucide-react";
+
+/* ─── Page Metadata ───────────────────────────────────────────── */
 
 export const metadata: Metadata = {
   title: "Daftar Tugas",
-  description: "Lihat, kelola, dan buat tugas serverless baru di CloudTask Pro.",
+  description: "Kelola dan buat tugas serverless baru di CloudTask Pro dengan RBAC.",
 };
 
-/* ─── Types ───────────────────────────────────────────────────── */
+/* ─── Constants ───────────────────────────────────────────────── */
 
-type TaskStatus = "running" | "completed" | "pending";
-
-interface Task {
-  id: string;
-  title: string;
-  description: string;
-  status: TaskStatus;
-  createdAt: string;
-  assignee: string;
-  priority: "low" | "medium" | "high";
-}
-
-/* ─── Static Data ─────────────────────────────────────────────── */
-
-const TASKS: Task[] = [
-  {
-    id: "task-001",
-    title: "Setup Supabase Auth dengan Google OAuth",
-    description:
-      "Konfigurasi autentikasi SSO menggunakan provider Google melalui Supabase Auth.",
-    status: "completed",
-    createdAt: "2026-09-20",
-    assignee: "Akmal",
-    priority: "high",
-  },
-  {
-    id: "task-002",
-    title: "Integrasi Cloudinary Upload API",
-    description:
-      "Implementasi endpoint upload gambar dengan transformasi otomatis WebP/AVIF.",
-    status: "running",
-    createdAt: "2026-09-22",
-    assignee: "Akmal",
-    priority: "medium",
-  },
-  {
-    id: "task-003",
-    title: "Desain Skema Database PostgreSQL",
-    description:
-      "Definisikan tabel tasks, users, dan tags beserta relasi dan RLS policy.",
-    status: "running",
-    createdAt: "2026-09-23",
-    assignee: "Akmal",
-    priority: "high",
-  },
-  {
-    id: "task-004",
-    title: "Deploy ke Vercel Edge Network",
-    description:
-      "Konfigurasi pipeline CI/CD dan variabel lingkungan production di Vercel.",
-    status: "pending",
-    createdAt: "2026-09-24",
-    assignee: "Akmal",
-    priority: "medium",
-  },
-  {
-    id: "task-005",
-    title: "Implementasi Realtime Subscriptions",
-    description:
-      "Gunakan Supabase Realtime untuk memperbarui status tugas secara live.",
-    status: "pending",
-    createdAt: "2026-09-24",
-    assignee: "Akmal",
-    priority: "low",
-  },
-];
-
-/* ─── Constant Maps ───────────────────────────────────────────── */
-
-const STATUS_BADGE: Record<TaskStatus, "default" | "secondary" | "outline"> = {
-  running: "default",
-  completed: "secondary",
-  pending: "outline",
-};
-
-const STATUS_LABEL: Record<TaskStatus, string> = {
-  running: "Berjalan",
-  completed: "Selesai",
-  pending: "Tertunda",
-};
-
-const PRIORITY_COLORS: Record<Task["priority"], string> = {
-  low: "text-emerald-600 dark:text-emerald-400",
-  medium: "text-amber-600 dark:text-amber-400",
-  high: "text-rose-600 dark:text-rose-400",
-};
-
-const PRIORITY_LABEL: Record<Task["priority"], string> = {
-  low: "Rendah",
-  medium: "Sedang",
-  high: "Tinggi",
-};
+const PAGE_SIZE = 10;
 
 /* ─── Metric Card Component ─────────────────────────────────────── */
 
@@ -147,120 +80,376 @@ function MetricCard({
   );
 }
 
-/* ─── Task Row Component ─────────────────────────────────────────── */
+/* ─── Pagination Component ────────────────────────────────────── */
 
-function TaskRow({ task }: { task: Task }) {
+interface PaginationProps {
+  currentPage: number;
+  hasNextPage: boolean;
+  search: string;
+}
+
+function Pagination({ currentPage, hasNextPage, search }: PaginationProps) {
+  const buildHref = (page: number) => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    params.set("page", String(page));
+    return `/tasks?${params.toString()}`;
+  };
+
   return (
-    <Link
-      href={`/tasks/${task.id}`}
-      className="group flex items-start justify-between gap-3 rounded-lg p-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-foreground group-hover:text-primary transition-colors">
-          {task.title}
-        </p>
-        <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-          <span className={`font-medium ${PRIORITY_COLORS[task.priority]}`}>
-            {PRIORITY_LABEL[task.priority]}
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>🗓 {task.createdAt}</span>
-        </div>
+    <div className="flex items-center justify-between pt-4 border-t border-border">
+      <p className="text-xs text-muted-foreground">
+        Halaman <span className="font-medium text-foreground">{currentPage}</span>
+      </p>
+      <div className="flex items-center gap-2">
+        <Button
+          asChild
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1"
+          aria-disabled={currentPage <= 1}
+          tabIndex={currentPage <= 1 ? -1 : undefined}
+        >
+          <Link
+            href={buildHref(currentPage - 1)}
+            aria-label="Halaman sebelumnya"
+            aria-current={currentPage <= 1 ? undefined : "page"}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            <span>Sebelumnya</span>
+          </Link>
+        </Button>
+        <Button
+          asChild
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1"
+          aria-disabled={!hasNextPage}
+          tabIndex={!hasNextPage ? -1 : undefined}
+        >
+          <Link
+            href={buildHref(currentPage + 1)}
+            aria-label="Halaman berikutnya"
+          >
+            <span>Berikutnya</span>
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
+        </Button>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Badge variant={STATUS_BADGE[task.status]} className="text-xs">
-          {STATUS_LABEL[task.status]}
-        </Badge>
-        <ArrowUpRight
-          className="h-3.5 w-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
-          aria-hidden="true"
-        />
-      </div>
-    </Link>
+    </div>
+  );
+}
+
+/* ─── Delete Button (Server Action inline) ────────────────────── */
+
+function DeleteButton({ taskId, isAdmin, isOwner }: {
+  taskId: string;
+  isAdmin: boolean;
+  isOwner: boolean;
+}) {
+  const canDelete = isAdmin || isOwner;
+  if (!canDelete) return null;
+
+  const deleteWithId = deleteTaskAction.bind(null, taskId);
+
+  return (
+    <form action={deleteWithId}>
+      <Button
+        type="submit"
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+        aria-label="Hapus tugas"
+        title={isAdmin ? "Hapus (Admin)" : "Hapus tugas Anda"}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+    </form>
+  );
+}
+
+/* ─── Toggle Status Button ────────────────────────────────────── */
+
+function ToggleStatusButton({ taskId, currentStatus, isOwner }: {
+  taskId: string;
+  currentStatus: string;
+  isOwner: boolean;
+}) {
+  if (!isOwner) return null;
+
+  const toggleWithArgs = toggleTaskStatusAction.bind(null, taskId, currentStatus);
+
+  return (
+    <form action={toggleWithArgs}>
+      <Button
+        type="submit"
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7 text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+        aria-label={currentStatus === "done" ? "Tandai belum selesai" : "Tandai selesai"}
+        title={currentStatus === "done" ? "Kembalikan ke todo" : "Tandai sebagai done"}
+      >
+        <ToggleLeft className="h-3.5 w-3.5" />
+      </Button>
+    </form>
   );
 }
 
 /* ─── Page ───────────────────────────────────────────────────────── */
 
-export default function TasksPage() {
-  const totalTasks = TASKS.length;
-  const runningTasks = TASKS.filter((t) => t.status === "running").length;
-  const completedTasks = TASKS.filter((t) => t.status === "completed").length;
+interface SearchParamsType {
+  search?: string;
+  page?: string;
+}
+
+export default async function TasksPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParamsType>;
+}) {
+  // Next.js 16: searchParams adalah Promise — wajib await
+  const { search = "", page = "1" } = await searchParams;
+
+  const supabase = await createClient();
+
+  // Autentikasi wajib (proxy sudah redirect jika belum login, tapi double-check)
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) redirect("/login?next=/tasks");
+
+  // Ambil profil user untuk RBAC & badge peran
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("full_name, role")
+    .eq("id", user.id)
+    .single();
+
+  const userRole = profile?.role ?? "member";
+  const isAdmin = userRole === "admin";
+
+  // Pagination
+  const currentPage = Math.max(1, parseInt(page, 10));
+  const from = (currentPage - 1) * PAGE_SIZE;
+  const to = from + PAGE_SIZE - 1;
+
+  // Query tugas dengan pencarian & pagination
+  let query = supabase
+    .from("tasks")
+    .select("id, title, status, priority, user_id, created_at", { count: "exact" })
+    .order("created_at", { ascending: false })
+    .range(from, to);
+
+  if (search.trim()) {
+    query = query.ilike("title", `%${search.trim()}%`);
+  }
+
+  // Admin melihat semua tugas; Member hanya miliknya
+  if (!isAdmin) {
+    query = query.eq("user_id", user.id);
+  }
+
+  const { data: tasks, count } = await query;
+
+  const totalCount = count ?? 0;
+  const taskList = tasks ?? [];
+  const hasNextPage = to < totalCount - 1;
+
+  // Hitung metrics
+  const doneCount = taskList.filter((t) => t.status === "done").length;
+  const inProgressCount = taskList.filter((t) => t.status === "in_progress").length;
 
   return (
     <div className="space-y-8">
       {/* ── Page Header ── */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">
-            Manajemen Tugas
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Pantau progres, dan buat tugas baru untuk proyek serverless Anda.
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
+              Manajemen Tugas
+            </h1>
+            {/* Badge Peran */}
+            <Badge
+              variant="outline"
+              className={
+                isAdmin
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                  : "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-400"
+              }
+            >
+              {isAdmin ? (
+                <>
+                  <Crown className="h-3 w-3 mr-1" />
+                  Admin
+                </>
+              ) : (
+                <>
+                  <User className="h-3 w-3 mr-1" />
+                  Member
+                </>
+              )}
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {isAdmin
+              ? "Mode Admin — Anda dapat melihat dan menghapus semua tugas."
+              : `Selamat datang, ${profile?.full_name ?? user.email}. Kelola tugas Anda.`}
           </p>
         </div>
-        <div className="hidden sm:flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5">
-          <Rocket className="h-4 w-4 text-primary" aria-hidden="true" />
-          <span className="text-xs font-medium text-muted-foreground">
-            The Serverless Odyssey
-          </span>
+
+        {/* CTA: API Tester */}
+        <div className="flex items-center gap-2">
+          <Button asChild variant="outline" size="sm" className="gap-1.5 h-9">
+            <Link href="/tasks/api-tester">
+              <Rocket className="h-3.5 w-3.5" />
+              <span className="text-xs">API Tester</span>
+            </Link>
+          </Button>
+          <div className="hidden sm:flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5">
+            <Rocket className="h-4 w-4 text-primary" aria-hidden="true" />
+            <span className="text-xs font-medium text-muted-foreground">
+              The Serverless Odyssey
+            </span>
+          </div>
         </div>
       </div>
 
       {/* ── Two-Column Layout ── */}
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1.4fr]">
-        {/* ── Left Column: Create Task Form ── */}
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_1.6fr]">
+        {/* ── Left Column: TaskForm ── */}
         <aside aria-label="Formulir pembuatan tugas">
-          <CreateTaskForm />
+          <TaskForm />
         </aside>
 
-        {/* ── Right Column: Metrics + Task List ── */}
+        {/* ── Right Column: Metrics + Search + Table ── */}
         <section aria-label="Ringkasan dan daftar tugas" className="space-y-6">
           {/* Metric Cards */}
           <div className="grid grid-cols-3 gap-3">
             <MetricCard
               title="Total"
-              value={totalTasks}
-              description="Semua tugas"
+              value={totalCount}
+              description={search ? "Hasil pencarian" : "Semua tugas"}
               icon={ListTodo}
               colorClass="bg-primary/10 text-primary"
             />
             <MetricCard
               title="Berjalan"
-              value={runningTasks}
+              value={inProgressCount}
               description="Aktif dikerjakan"
               icon={Clock}
               colorClass="bg-amber-500/10 text-amber-600 dark:text-amber-400"
             />
             <MetricCard
               title="Selesai"
-              value={completedTasks}
-              description="Telah tuntas"
+              value={doneCount}
+              description="Halaman ini"
               icon={CheckCircle2}
               colorClass="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
             />
           </div>
 
-          {/* Task List Card */}
+          {/* Task Table Card */}
           <Card className="border-border bg-card">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold text-foreground">
-                Tugas Terkini
-              </CardTitle>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <CardTitle className="text-sm font-semibold text-foreground">
+                  Tugas Terkini
+                  {totalCount > 0 && (
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      ({totalCount} total)
+                    </span>
+                  )}
+                </CardTitle>
+                {/* Search input */}
+                <TaskSearchInput defaultValue={search} />
+              </div>
             </CardHeader>
-            <Separator className="mb-1" />
-            <CardContent className="pt-1 pb-2">
-              <ul
-                role="list"
-                aria-label="Daftar tugas terkini"
-                className="divide-y divide-border"
-              >
-                {TASKS.map((task) => (
-                  <li key={task.id}>
-                    <TaskRow task={task} />
-                  </li>
-                ))}
-              </ul>
+
+            <Separator className="mb-0" />
+
+            <CardContent className="pt-0 pb-4 px-0">
+              {taskList.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <ListTodo className="h-10 w-10 text-muted-foreground/40 mb-3" />
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {search ? `Tidak ada tugas untuk "${search}"` : "Belum ada tugas"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {search ? "Coba kata kunci lain" : "Buat tugas pertama Anda di formulir sebelah kiri."}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead className="pl-4 w-[40%]">Judul</TableHead>
+                        <TableHead>Prioritas</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right pr-4">Aksi</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {taskList.map((task) => {
+                        const isOwner = task.user_id === user.id;
+                        return (
+                          <TableRow
+                            key={task.id}
+                            className="group"
+                          >
+                            <TableCell className="pl-4 font-medium text-sm">
+                              <span
+                                className={
+                                  task.status === "done"
+                                    ? "line-through text-muted-foreground"
+                                    : "text-foreground"
+                                }
+                              >
+                                {task.title}
+                              </span>
+                              {!isOwner && isAdmin && (
+                                <span className="ml-2 text-[10px] text-muted-foreground">
+                                  (bukan milik Anda)
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <PriorityBadge priority={task.priority} />
+                            </TableCell>
+                            <TableCell>
+                              <StatusBadge status={task.status} />
+                            </TableCell>
+                            <TableCell className="pr-4">
+                              <div className="flex items-center justify-end gap-1">
+                                <ToggleStatusButton
+                                  taskId={task.id}
+                                  currentStatus={task.status}
+                                  isOwner={isOwner}
+                                />
+                                <DeleteButton
+                                  taskId={task.id}
+                                  isAdmin={isAdmin}
+                                  isOwner={isOwner}
+                                />
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+
+                  {/* Pagination */}
+                  <div className="px-4">
+                    <Pagination
+                      currentPage={currentPage}
+                      hasNextPage={hasNextPage}
+                      search={search}
+                    />
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
         </section>
